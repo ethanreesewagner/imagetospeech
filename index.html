@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Camera Captioning</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        h1 {
+            margin-bottom: 10px;
+        }
+        #videoElement {
+            width: 100%;
+            max-width: 640px;
+            display: block;
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        #status {
+            margin: 20px 0;
+            padding: 10px;
+        }
+        #captionText {
+            margin: 20px 0;
+            padding: 10px;
+            border: 1px solid #ccc;
+            min-height: 50px;
+        }
+        .loading-container {
+            margin: 20px 0;
+        }
+        .loading-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        .loading-bar-container {
+            width: 100%;
+            max-width: 500px;
+            height: 30px;
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+            margin: 20px 0;
+            position: relative;
+            overflow: hidden;
+        }
+        .loading-bar {
+            height: 100%;
+            background-color: #3498db;
+            width: 0%;
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .settings {
+            margin: 20px 0;
+        }
+        .settings label {
+            display: block;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Live Camera Captioning</h1>
+    <div id="status">Initializing...</div>
+    <div class="loading-container" id="loadingContainer" style="display: none;">
+        <div class="loading-spinner"></div>
+        <div class="loading-bar-container">
+            <div class="loading-bar" id="loadingBar">0%</div>
+        </div>
+        <div id="loadingText">Loading model...</div>
+    </div>
+    <video id="videoElement" autoplay playsinline style="display: none;"></video>
+    <canvas id="canvasElement" style="display: none;"></canvas>
+    <div>
+        <button id="startBtn" disabled>Start Camera</button>
+        <button id="stopBtn" disabled>Stop Camera</button>
+    </div>
+    <div class="settings">
+        <label>
+            Capture Interval (seconds): 
+            <input type="range" id="intervalSlider" min="2" max="10" value="5" step="1">
+            <span id="intervalValue">5</span>
+        </label>
+    </div>
+    <div id="captionText">No caption yet. Start camera to begin automatic captioning.</div>
+    <script type="module">
+        let accessToken = null;
+        let originalFetch = window.fetch;
+        window.fetch = async function(url, init = {}) {
+            if (accessToken && typeof url === 'string' && url.includes('huggingface.co')) {
+                init = init || {};
+                const headers = new Headers(init.headers);
+                headers.set('Authorization', `Bearer ${accessToken}`);
+                init.headers = headers;
+            }
+            return originalFetch(url, init);
+        };
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+        env.allowLocalModels = false;
+        let videoStream = null;
+        let captioner = null;
+        let captureInterval = null;
+        let isProcessing = false;
+        const statusEl = document.getElementById('status');
+        const videoEl = document.getElementById('videoElement');
+        const canvasEl = document.getElementById('canvasElement');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const captionText = document.getElementById('captionText');
+        const intervalSlider = document.getElementById('intervalSlider');
+        const intervalValue = document.getElementById('intervalValue');
+        const loadingContainer = document.getElementById('loadingContainer');
+        const loadingBar = document.getElementById('loadingBar');
+        const loadingText = document.getElementById('loadingText');
+        intervalSlider.addEventListener('input', (e) => {
+            intervalValue.textContent = e.target.value;
+            if (captureInterval && videoStream) {
+                clearInterval(captureInterval);
+                startAutoCapture();
+            }
+        });
+        function showLoading(message = 'Loading...', progress = 0) {
+            loadingContainer.style.display = 'block';
+            loadingText.textContent = message;
+            loadingBar.style.width = progress + '%';
+            loadingBar.textContent = progress + '%';
+        }
+        function hideLoading() {
+            loadingContainer.style.display = 'none';
+        }
+        let progressInterval = null;
+        function simulateProgress() {
+            let progress = 0;
+            progressInterval = setInterval(() => {
+                progress = Math.min(progress + Math.random() * 10, 90);
+                loadingBar.style.width = progress + '%';
+                loadingBar.textContent = Math.round(progress) + '%';
+            }, 500);
+        }
+        async function fetchAccessToken() {
+            try {
+                if (window.HF_ACCESS_TOKEN) {
+                    accessToken = window.HF_ACCESS_TOKEN;
+                    return accessToken;
+                }
+                const response = await fetch('/api/token');
+                if (response.ok) {
+                    const data = await response.json();
+                    accessToken = data.token;
+                    return accessToken;
+                }
+            } catch (error) {
+                console.warn('Could not fetch access token:', error);
+            }
+            return null;
+        }
+        async function initializeModel() {
+            try {
+                showLoading('Loading image captioning model...', 0);
+                simulateProgress();
+                await fetchAccessToken();
+                if (accessToken) {
+                    env.accessToken = accessToken;
+                }
+                const pipelineOptions = {
+                    quantized: true,
+                };
+                try {
+                    captioner = await pipeline(
+                        'image-to-text',
+                        'Xenova/vit-gpt2-image-captioning',
+                        pipelineOptions
+                    );
+                } catch (quantizedError) {
+                    console.warn('Quantized model failed, trying without quantization:', quantizedError);
+                    captioner = await pipeline(
+                        'image-to-text',
+                        'Xenova/vit-gpt2-image-captioning',
+                        { quantized: false }
+                    );
+                }
+                if (progressInterval) {
+                    clearInterval(progressInterval);
+                }
+                showLoading('Model loaded!', 100);
+                setTimeout(() => {
+                    hideLoading();
+                }, 500);
+                statusEl.textContent = 'Model loaded! Click "Start Camera" to begin automatic captioning.';
+                startBtn.disabled = false;
+            } catch (error) {
+                if (progressInterval) {
+                    clearInterval(progressInterval);
+                }
+                hideLoading();
+                console.error('Error loading model:', error);
+                statusEl.textContent = `Error loading model: ${error.message}`;
+            }
+        }
+        async function startCamera() {
+            try {
+                videoStream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        facingMode: 'user'
+                    }
+                });
+                videoEl.srcObject = videoStream;
+                videoEl.style.display = 'block';
+                videoEl.play();
+                canvasEl.width = videoEl.videoWidth || 640;
+                canvasEl.height = videoEl.videoHeight || 480;
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                statusEl.textContent = 'Camera active. Capturing and processing images automatically...';
+                startAutoCapture();
+            } catch (error) {
+                console.error('Error accessing camera:', error);
+                statusEl.textContent = `Error accessing camera: ${error.message}`;
+            }
+        }
+        function stopCamera() {
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+            }
+            if (captureInterval) {
+                clearInterval(captureInterval);
+                captureInterval = null;
+            }
+            videoEl.srcObject = null;
+            videoEl.style.display = 'none';
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusEl.textContent = 'Camera stopped.';
+        }
+        function startAutoCapture() {
+            if (captureInterval) {
+                clearInterval(captureInterval);
+            }
+            if (videoStream && captioner) {
+                const interval = parseInt(intervalSlider.value) * 1000;
+                captureAndCaption();
+                captureInterval = setInterval(() => {
+                    if (!isProcessing) {
+                        captureAndCaption();
+                    }
+                }, interval);
+            }
+        }
+        async function captureAndCaption() {
+            if (!videoStream || isProcessing || !captioner) {
+                return;
+            }
+            isProcessing = true;
+            statusEl.textContent = 'Processing image...';
+            try {
+                const ctx = canvasEl.getContext('2d');
+                ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
+                const imageData = canvasEl.toDataURL('image/jpeg', 0.8);
+                const output = await captioner(imageData);
+                let caption = '';
+                if (output && output.length > 0) {
+                    caption = output[0].generated_text || output[0].text || '';
+                } else if (typeof output === 'string') {
+                    caption = output;
+                }
+                if (caption) {
+                    captionText.textContent = caption;
+                    speakCaption(caption);
+                    statusEl.textContent = `Caption generated. Next capture in ${intervalSlider.value} seconds...`;
+                } else {
+                    captionText.textContent = 'No caption could be generated.';
+                    statusEl.textContent = 'Failed to generate caption.';
+                }
+            } catch (error) {
+                console.error('Error generating caption:', error);
+                captionText.textContent = `Error: ${error.message}`;
+                statusEl.textContent = `Error: ${error.message}`;
+            } finally {
+                isProcessing = false;
+            }
+        }
+        function speakCaption(text) {
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = 'en-US';
+                utterance.rate = 0.9;
+                utterance.pitch = 1;
+                utterance.volume = 1;
+                window.speechSynthesis.speak(utterance);
+            } else {
+                console.warn('Web Speech API not supported in this browser');
+            }
+        }
+        startBtn.addEventListener('click', startCamera);
+        stopBtn.addEventListener('click', stopCamera);
+        initializeModel();
+    </script>
+</body>
+</html>
