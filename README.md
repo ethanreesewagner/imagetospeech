@@ -4,6 +4,10 @@
 
 A web application that captures live camera footage, processes it through ViT-GPT2 image captioning model using transformers.js, and speaks the captions using the Web Speech API.
 
+## Demo Video
+
+[https://www.youtube.com/watch?v=ye-BIfGnGuw]
+
 ## Setup
 
 1. Install dependencies:
