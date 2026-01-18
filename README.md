@@ -7,6 +7,7 @@ A web application that captures live camera footage, processes it through ViT-GP
 ## Demo Video
 
 [https://www.youtube.com/watch?v=ye-BIfGnGuw]
+<iframe width="560" height="315" src="https://www.youtube.com/embed/ye-BIfGnGuw?si=eytoF656QvQdJhZM" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 
 ## Setup
 
